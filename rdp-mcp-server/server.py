@@ -150,68 +150,82 @@ def tool_connect_rdp(params):
     session.width = width
     session.height = height
 
-    # Step 1: Start Xvfb (virtual framebuffer)
-    session.xvfb_proc = subprocess.Popen(
-        ["Xvfb", session.display, "-screen", f"0", f"{width}x{height}x24"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    time.sleep(1)  # Wait for Xvfb to start
+    # Step 1: Start Xvfb (virtual framebuffer) — or reuse if already running
+    # Check if Xvfb is already running on our display
+    xvfb_already_running = False
+    try:
+        result = subprocess.run(["xdpyinfo", "-display", session.display],
+                                capture_output=True, timeout=3)
+        if result.returncode == 0:
+            xvfb_already_running = True
+    except Exception:
+        pass
 
-    # Verify Xvfb is running
-    if session.xvfb_proc.poll() is not None:
-        return {"error": "Failed to start Xvfb virtual framebuffer"}
+    if not xvfb_already_running:
+        session.xvfb_proc = subprocess.Popen(
+            ["Xvfb", session.display, "-screen", f"0", f"{width}x{height}x24"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1)  # Wait for Xvfb to start
 
-    # Step 2: Start boundary connect to get a local proxy port
-    # We use boundary connect (TCP) with -exec to capture the proxy port
-    # The proxy gives us BOUNDARY_PROXIED_IP and BOUNDARY_PROXIED_PORT
-    # We write a small script that prints these and exits, then parse the output
+        # Verify Xvfb is running
+        if session.xvfb_proc.poll() is not None:
+            return {"error": "Failed to start Xvfb virtual framebuffer"}
+    else:
+        # Xvfb already running, just use it
+        pass
 
-    proxy_script = """#!/bin/bash
-echo "PROXY_IP=$BOUNDARY_PROXIED_IP"
-echo "PROXY_PORT=$BOUNDARY_PROXIED_PORT"
-# Keep the connection alive
-sleep 999999
-"""
-    proxy_script_path = "/tmp/rdp-proxy-wrapper.sh"
-    with open(proxy_script_path, "w") as f:
-        f.write(proxy_script)
-    os.chmod(proxy_script_path, 0o755)
-
+    # Step 2: Authorize a session and get the proxy port
+    # Run boundary connect — it prints proxy info (including Port:) to stderr
+    # and keeps a local TCP proxy running for the session lifetime.
     env = os.environ.copy()
     env["BOUNDARY_ADDR"] = boundary_addr
     env["BOUNDARY_KEYRING_TYPE"] = "none"
     env["BOUNDARY_TOKEN"] = boundary_token
 
-    # Start boundary connect in background - it will start a proxy and run our wrapper
-    # The wrapper prints the proxy IP/port and keeps the connection alive
+    # Start boundary connect with stdout+stderr merged so we can read both
     session.boundary_proc = subprocess.Popen(
         ["boundary", "connect",
          "-target-id", target_id,
          "-keyring-type", "none",
          "-token", "env://BOUNDARY_TOKEN",
-         "-exec", proxy_script_path, "--"],
+         "-exec", "sleep", "--", "999999"],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         env=env,
     )
 
-    # Wait for the proxy port to appear
+    # Wait for the proxy port to appear in the merged output
     proxy_info = {}
-    for _ in range(30):
+    start_time = time.time()
+    while time.time() - start_time < 30:
         line = session.boundary_proc.stdout.readline().decode("utf-8", errors="replace").strip()
-        if "PROXY_IP=" in line:
-            proxy_info["ip"] = line.split("=", 1)[1]
-        elif "PROXY_PORT=" in line:
-            proxy_info["port"] = line.split("=", 1)[1]
-        if "ip" in proxy_info and "port" in proxy_info:
+        if not line:
+            if session.boundary_proc.poll() is not None:
+                break
+            continue
+        if "Address:" in line and "127.0.0.1" in line:
+            proxy_info["ip"] = "127.0.0.1"
+        if "Port:" in line:
+            port_str = line.split("Port:")[-1].strip()
+            if port_str.isdigit():
+                proxy_info["port"] = port_str
+        if "port" in proxy_info:
+            # Default ip if not already set
+            proxy_info.setdefault("ip", "127.0.0.1")
             break
-        time.sleep(0.5)
 
     if "port" not in proxy_info:
-        stderr_data = session.boundary_proc.stderr.read().decode("utf-8", errors="replace")
+        # Read remaining output for error info
+        remaining = b""
+        try:
+            remaining = session.boundary_proc.stdout.read(4096)
+        except Exception:
+            pass
         session.cleanup()
-        return {"error": f"Failed to get proxy port from boundary connect. stderr: {stderr_data[:500]}"}
+        error_text = remaining.decode("utf-8", errors="replace") if remaining else "No proxy port found"
+        return {"error": f"Failed to get proxy port from boundary connect. Output: {error_text[:500]}"}
 
     session.proxy_host = proxy_info.get("ip", "127.0.0.1")
     session.proxy_port = proxy_info["port"]
@@ -231,15 +245,6 @@ sleep 999999
         "-clipboard",
         "-decorations",
         "/smart-sizing",
-        f"/monitors:0",
-        f"/wm:{width}x{height}",
-        "-wallpaper",
-        "-themes",
-        "-fonts",
-        "-aero",
-        "/gdi:hw",
-        "/codec:jpeg",
-        "/jpeg-quality:75",
     ]
 
     if domain:
