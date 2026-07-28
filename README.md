@@ -8,10 +8,10 @@ This demo supports two Boundary deployment modes:
 
 ### Mode 1: HCP Boundary (recommended, with session recording)
 
-Uses [HCP Boundary](https://developer.hashicorp.com/hcp/docs/boundary) (managed SaaS) with Terraform to provision all resources. Session recording works because HCP Boundary supports enterprise features including storage buckets.
+Uses [HCP Boundary](https://developer.hashicorp.com/hcp/docs/boundary) (managed SaaS) with Terraform to provision the cluster and all resources. Users supply only an HCP service principal client ID and secret — Terraform creates the cluster, provisions all Boundary resources, and outputs the target ID.
 
-**Pros:** Session recording works, no license management, managed infrastructure.
-**Cons:** Requires an HCP account, MinIO must be publicly reachable from HCP workers.
+**Pros:** Session recording supported, no license management, managed infrastructure, fully automated via Terraform.
+**Cons:** Requires an HCP account. For session recording, the S3-compatible storage endpoint (MinIO) must be publicly reachable from HCP workers. Use an actual S3 bucket or deploy MinIO on a cloud VM if your local MinIO isn't publicly accessible.
 
 ### Mode 2: Self-hosted Boundary dev mode (for local testing, no recording)
 
@@ -106,29 +106,36 @@ Note the absolute path to the built binary.
 
 #### Mode 1: HCP Boundary (with session recording)
 
-**3a. Start MinIO (for session recording storage)**
-
-MinIO needs to be reachable from HCP Boundary workers. If running locally, use a tunnel (Tailscale, ngrok) or deploy MinIO on a cloud VM.
+**3a. Create the HCP Boundary cluster with Terraform**
 
 ```bash
-cd boundary-mcp-rdp-computer-use-demo/docker
-# Start only MinIO (not the full stack)
-docker compose up -d minio
-```
-
-**3b. Provision Boundary resources with Terraform**
-
-```bash
-cd boundary-mcp-rdp-computer-use-demo/terraform
+cd boundary-mcp-rdp-computer-use-demo/terraform/01-cluster
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your HCP Boundary URL, auth method ID, admin password,
-# Windows host IP, Windows credentials, and MinIO endpoint
+# Edit terraform.tfvars with your HCP service principal client ID and secret
 
 terraform init
 terraform apply
 ```
 
-Terraform creates: org, project, host catalog, host, host set, credential store, credential, storage bucket (for session recordings), and the RDP target with `enable_session_recording=true`.
+This creates an HCP Boundary cluster. Note the `boundary_cluster_url` from the output.
+
+**3b. Provision Boundary resources with Terraform**
+
+```bash
+cd ../02-resources
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars:
+#   boundary_addr = the cluster URL from step 3a
+#   boundary_admin_password = the admin password from step 3a
+#   windows_host_ip, windows_username, windows_password = your Windows host
+#   minio_endpoint = publicly reachable MinIO URL (for session recording)
+#   enable_recording = true (set to false if MinIO isn't publicly reachable)
+
+terraform init
+terraform apply
+```
+
+Terraform creates: org, project, host catalog, host, host set, credential store, credential, storage bucket (if `enable_recording=true`), and the RDP target.
 
 Note the `target_id` and `boundary_addr` from the Terraform output.
 
@@ -137,7 +144,6 @@ Note the `target_id` and `boundary_addr` from the Terraform output.
 ```bash
 export BOUNDARY_ADDR=https://YOUR_CLUSTER.boundary.hashicorp.cloud
 boundary authenticate password \
-  -auth-method-id ampw_XXXXXXXX \
   -login-name admin \
   -password env://BOUNDARY_ADMIN_PASSWORD
 ```
@@ -441,9 +447,12 @@ boundary-mcp-rdp-computer-use-demo/
 +-- docker/
 |    +-- docker-compose.yml            # 3 services: Boundary + Postgres + MinIO
 +-- terraform/
-|    +-- main.tf                       # HCP Boundary resources (org, project, host, target, storage bucket)
-|    +-- terraform.tfvars.example      # Template for your HCP Boundary credentials
-|    +-- .gitignore                    # Ignores tfvars, tfstate, .terraform/
+|    +-- 01-cluster/
+|    |    +-- main.tf                   # Create HCP Boundary cluster (SP client_id/secret)
+|    |    +-- terraform.tfvars.example  # Template for HCP SP credentials
+|    +-- 02-resources/
+|         +-- main.tf                   # Provision org, project, host, target, storage bucket
+|         +-- terraform.tfvars.example  # Template for cluster URL + Windows host + MinIO
 +-- rdp-mcp-server/
 |    +-- server.py                     # RDP Computer Use MCP server (Python)
 |    +-- Dockerfile                    # Docker image with all system dependencies
