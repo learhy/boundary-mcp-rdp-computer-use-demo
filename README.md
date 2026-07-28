@@ -1,14 +1,32 @@
 # Boundary MCP RDP Computer Use Demo
 
-An AI agent (IBM Bob) connects to a remote Windows host through HashiCorp Boundary Enterprise using the RDP target type, uses computer use tools (screenshot, click, type, key press) to set up IIS with a hello world page, and retrieves the session recording to demonstrate the audit trail.
+An AI agent (IBM Bob) connects to a remote Windows host through HashiCorp Boundary using the RDP target type, uses computer use tools (screenshot, click, type, key press) to set up IIS with a hello world page, and retrieves the session recording to demonstrate the audit trail.
+
+## Two Modes
+
+This demo supports two Boundary deployment modes:
+
+### Mode 1: HCP Boundary (recommended, with session recording)
+
+Uses [HCP Boundary](https://developer.hashicorp.com/hcp/docs/boundary) (managed SaaS) with Terraform to provision all resources. Session recording works because HCP Boundary supports enterprise features including storage buckets.
+
+**Pros:** Session recording works, no license management, managed infrastructure.
+**Cons:** Requires an HCP account, MinIO must be publicly reachable from HCP workers.
+
+### Mode 2: Self-hosted Boundary dev mode (for local testing, no recording)
+
+Uses `boundary dev` in Docker. Works for the RDP computer use flow but does NOT support session recording (dev mode doesn't enable enterprise features even with a license).
+
+**Pros:** No HCP account needed, everything runs locally.
+**Cons:** No session recording.
 
 ## What the Demo Shows
 
-1. **RDP access via Boundary Enterprise** — a remote Windows host (e.g. AWS EC2 Windows Server) is registered as a Boundary TCP target on port 3389. Boundary brokers credentials so the agent authenticates without handling passwords directly. The entire session is proxied through a Boundary worker.
+1. **RDP access via Boundary** — a remote Windows host (e.g. AWS EC2 Windows Server) is registered as a Boundary TCP target on port 3389. Boundary brokers credentials so the agent authenticates without handling passwords directly. The entire session is proxied through a Boundary worker.
 
 2. **Agent-driven computer use** — the agent takes screenshots of the Windows desktop, identifies UI elements by looking at the pixels, clicks on targets, types commands, and sends key events. It installs IIS, creates a hello world page, and verifies the site is serving.
 
-3. **Session recording for audit** — the RDP target has session recording enabled with a MinIO storage bucket. Every frame, every click, every keystroke is captured. After the session ends, the recording is available for download and playback.
+3. **Session recording for audit** (HCP mode only) — the RDP target has session recording enabled with a MinIO storage bucket. Every frame, every click, every keystroke is captured. After the session ends, the recording is available for download and playback.
 
 ## Architecture
 
@@ -43,12 +61,13 @@ IBM Bob (agent)
 
 | Requirement | Install command | Notes |
 |---|---|---|
-| Docker + Docker Compose | [docs.docker.com](https://docs.docker.com/get-docker/) | |
+| Docker + Docker Compose | [docs.docker.com](https://docs.docker.com/get-docker/) | For MinIO (Mode 1) or full stack (Mode 2) |
 | Go 1.22+ | [go.dev/dl](https://go.dev/dl/) | For building boundary-mcp |
 | `boundary` CLI | [developer.hashicorp.com/boundary/install](https://developer.hashicorp.com/boundary/install) | |
 | `python3` | `apt install python3` | |
+| `terraform` | [developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install) | Required for Mode 1 (HCP Boundary) |
 | IBM Bob | Internal IBM tool | Any MCP-compatible agent works |
-| Boundary Enterprise license | HashiCorp sales / trial | Required for session recording |
+| HCP Boundary account | [cloud.hashicorp.com](https://cloud.hashicorp.com) | Required for Mode 1 (session recording) |
 | Remote Windows host | AWS EC2 / Azure VM / etc. | RDP enabled on port 3389 |
 
 ### System packages for the RDP MCP server
@@ -83,20 +102,60 @@ go build -o boundary-mcp ./cmd/boundary-mcp/
 
 Note the absolute path to the built binary.
 
-### Step 3: Start the Docker stack
+### Step 3: Choose your Boundary mode
 
-The Docker stack runs Boundary, PostgreSQL, and MinIO. The Windows host is NOT in the stack — it runs separately on AWS.
+#### Mode 1: HCP Boundary (with session recording)
+
+**3a. Start MinIO (for session recording storage)**
+
+MinIO needs to be reachable from HCP Boundary workers. If running locally, use a tunnel (Tailscale, ngrok) or deploy MinIO on a cloud VM.
 
 ```bash
 cd boundary-mcp-rdp-computer-use-demo/docker
-docker compose up -d --build
+# Start only MinIO (not the full stack)
+docker compose up -d minio
+```
+
+**3b. Provision Boundary resources with Terraform**
+
+```bash
+cd boundary-mcp-rdp-computer-use-demo/terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your HCP Boundary URL, auth method ID, admin password,
+# Windows host IP, Windows credentials, and MinIO endpoint
+
+terraform init
+terraform apply
+```
+
+Terraform creates: org, project, host catalog, host, host set, credential store, credential, storage bucket (for session recordings), and the RDP target with `enable_session_recording=true`.
+
+Note the `target_id` and `boundary_addr` from the Terraform output.
+
+**3c. Get an auth token**
+
+```bash
+export BOUNDARY_ADDR=https://YOUR_CLUSTER.boundary.hashicorp.cloud
+boundary authenticate password \
+  -auth-method-id ampw_XXXXXXXX \
+  -login-name admin \
+  -password env://BOUNDARY_ADMIN_PASSWORD
+```
+
+Save the token from the output.
+
+#### Mode 2: Self-hosted Boundary dev mode (no recording)
+
+```bash
+cd boundary-mcp-rdp-computer-use-demo/docker
+docker compose up -d
 ```
 
 This starts 3 services:
 
 | Container | Purpose | Host port |
 |---|---|---|
-| `rdp-demo-boundary` | Boundary Enterprise (controller + worker, dev mode) | 9220 (API), 9222 (proxy) |
+| `rdp-demo-boundary` | Boundary (controller + worker, dev mode) | 9220 (API), 9322 (proxy) |
 | `rdp-demo-db` | PostgreSQL for Boundary state | internal |
 | `rdp-demo-minio` | MinIO (S3-compatible storage for session recordings) | 9230 (S3 API), 9231 (console) |
 
@@ -290,17 +349,19 @@ Agent <- MCP tools <- scrot    <- Xvfb display :99 <- xfreerdp3 <- RDP <- Bounda
 
 See [TOOLS_EVAL.md](TOOLS_EVAL.md) for the full evaluation of RDP automation tools. The short version: FreeRDP3 + Xvfb + xdotool + scrot is the only stack that simultaneously supports screenshot capture, input injection, headless operation, and Boundary proxy compatibility on Linux.
 
-### Session Recording
+### Session Recording (HCP Boundary mode only)
 
-Boundary Enterprise captures the entire RDP session as a recording:
+Boundary captures the entire RDP session as a recording:
 
-1. The target is created with `enable_session_recording=true` and a `storage_bucket_id` pointing to the MinIO bucket
+1. The target is created with `enable_session_recording=true` and a `storage_bucket_id` pointing to the MinIO bucket (done by Terraform in HCP mode)
 2. When the agent connects, Boundary starts recording all traffic on the session
 3. The recording includes all screen updates, input events, and channel data
 4. When the session ends (agent disconnects), Boundary finalizes the recording and stores it in MinIO
 5. The recording can be listed, downloaded, and played back
 
 This is the PAM audit story: every action the agent took on the Windows host is captured and verifiable. A security team can review the recording to confirm the agent only did what it was supposed to do.
+
+> **Note:** Session recording requires HCP Boundary or a self-hosted Boundary Enterprise deployment (not dev mode). The Terraform config in `terraform/main.tf` provisions the storage bucket and enables recording on the target.
 
 ### Boundary Resource Model
 
@@ -379,12 +440,16 @@ boundary-mcp-rdp-computer-use-demo/
 +-- .mcp.json                          # MCP server config (template)
 +-- docker/
 |    +-- docker-compose.yml            # 3 services: Boundary + Postgres + MinIO
++-- terraform/
+|    +-- main.tf                       # HCP Boundary resources (org, project, host, target, storage bucket)
+|    +-- terraform.tfvars.example      # Template for your HCP Boundary credentials
+|    +-- .gitignore                    # Ignores tfvars, tfstate, .terraform/
 +-- rdp-mcp-server/
 |    +-- server.py                     # RDP Computer Use MCP server (Python)
 |    +-- Dockerfile                    # Docker image with all system dependencies
 |    +-- requirements.txt              # Python dependencies (stdlib only)
 +-- scripts/
-     +-- bootstrap-boundary.py          # Create all Boundary resources
+     +-- bootstrap-boundary.py          # Create Boundary resources (Mode 2: dev mode)
      +-- retrieve-recordings.py        # List and download session recordings
 ```
 

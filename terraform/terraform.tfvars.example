@@ -1,0 +1,23 @@
+# HCP Boundary variables - set via environment or this file
+# Copy this file to terraform.tfvars and fill in your values
+
+# HCP Boundary cluster URL (from HCP console)
+boundary_addr = "https://YOUR_CLUSTER.boundary.hashicorp.cloud"
+
+# Auth method ID (from HCP console > Boundary > Auth Methods)
+boundary_auth_method_id = "ampw_XXXXXXXX"
+
+# Admin password you set when creating the HCP Boundary cluster
+boundary_admin_password = "YOUR_ADMIN_PASSWORD"
+
+# Remote Windows host (AWS EC2)
+windows_host_ip = "ec2-xx-xx-xx-xx.compute.amazonaws.com"
+windows_username = "Administrator"
+windows_password = "YOUR_WINDOWS_PASSWORD"
+
+# MinIO endpoint (must be reachable from HCP Boundary workers)
+# If MinIO runs on your local machine, use a publicly reachable address
+# (e.g. via Tailscale, a tunnel, or deploy MinIO on a cloud VM)
+minio_endpoint = "http://YOUR_MINIO_HOST:9000"
+minio_access_key = "minioadmin"
+minio_secret_key = "minioadmin123"
