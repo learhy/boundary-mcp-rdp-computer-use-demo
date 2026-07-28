@@ -1,15 +1,17 @@
 # Boundary MCP RDP Computer Use Demo - Docker Compose
 #
-# Requires:
-#   - KVM support (/dev/kvm) for the Windows VM
-#   - Boundary Enterprise license (BOUNDARY_LICENSE env var or license file)
-#   - At least 8GB free RAM for the Windows VM
+# Connects to a remote Windows host (e.g. AWS EC2) via RDP through Boundary.
+# The Windows host is NOT in this compose stack - it runs separately on AWS.
 #
 # Services:
 #   1. Boundary (controller + worker, enterprise dev mode) - ports 9220/9222
 #   2. PostgreSQL (Boundary state store)
 #   3. MinIO (S3-compatible storage for session recordings)
-#   4. Windows VM (dockurr/windows with RDP on port 3389)
+#
+# Prerequisites:
+#   - A Windows host with RDP enabled on port 3389, accessible from this machine
+#   - Boundary Enterprise license (BOUNDARY_LICENSE env var or license file)
+#   - Set WINDOWS_HOST_IP to the public/private IP of your Windows host
 
 services:
   # ── Boundary Controller + Worker (Enterprise) ──────────────────────────
@@ -20,11 +22,7 @@ services:
       - "9220:9220"   # API
       - "9222:9222"   # Proxy
     environment:
-      # Enterprise license - set via env var or mount license file
-      # For HCP Boundary, use the HCP cluster instead
       BOUNDARY_LICENSE: "${BOUNDARY_LICENSE:-}"
-      # Dev mode with enterprise features
-      # -recovery-kms-type=none disables KMS (dev only)
     command: >
       boundary dev
       -bind=0.0.0.0
@@ -78,40 +76,6 @@ services:
     networks:
       rdp-net:
         ipv4_address: 10.30.0.30
-
-  # ── Windows VM (requires KVM) ─────────────────────────────────────────
-  # Uses dockurr/windows which runs Windows in Docker via QEMU
-  # Requires /dev/kvm on the host
-  # Windows Server 2022 evaluation ISO is downloaded automatically
-  windows:
-    image: dockurr/windows
-    container_name: rdp-demo-windows
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/kvm
-    environment:
-      # Windows version: win11, win10, ltsc11, ltsc10, server2022, server2019
-      VERSION: "server2022"
-      # RDP username/password - set during Windows setup
-      USERNAME: "Administrator"
-      PASSWORD: "P@ssw0rd!23"
-      RAM_SIZE: "4G"
-      CPU_CORES: "2"
-      DISK_SIZE: "40G"
-    ports:
-      - "13389:3389"   # RDP (mapped to host port 13389)
-      - "15000:5000"   # VNC (for initial setup if needed)
-    volumes:
-      - windows-data:/storage
-    depends_on:
-      - boundary
-    networks:
-      rdp-net:
-        ipv4_address: 10.30.0.40
-
-volumes:
-  windows-data:
 
 networks:
   rdp-net:

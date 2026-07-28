@@ -4,19 +4,28 @@ Bootstrap script for Demo 3: RDP Computer Use with Session Recording.
 
 Creates all Boundary resources needed for the demo:
   - Org and Project
-  - Host Catalog (static) with one Windows host
+  - Host Catalog (static) with one Windows host (remote, e.g. AWS EC2)
   - Host Set containing the Windows host
   - Credential Store (static) with username/password for Windows
   - Storage Bucket (MinIO/S3) for session recordings
   - TCP target on port 3389 (RDP) with brokered credentials and session recording enabled
 
 Usage:
-  BOUNDARY_ADDR=http://127.0.0.1:9220 python3 bootstrap-boundary.py
+  BOUNDARY_ADDR=http://127.0.0.1:9220 \
+  WINDOWS_HOST_IP=10.0.1.42 \
+  WINDOWS_USERNAME=Administrator \
+  WINDOWS_PASSWORD=YourPassword123 \
+  python3 bootstrap-boundary.py
 
-Prerequisites:
-  - Boundary controller running and accessible
-  - MinIO running and accessible
-  - boundary CLI installed and on PATH
+Environment variables:
+  BOUNDARY_ADDR       - Boundary API address (default: http://127.0.0.1:9220)
+  MINIO_URL           - MinIO S3 API URL (default: http://127.0.0.1:9230)
+  MINIO_ACCESS_KEY    - MinIO access key (default: minioadmin)
+  MINIO_SECRET_KEY    - MinIO secret key (default: minioadmin123)
+  WINDOWS_HOST_IP     - IP/hostname of the remote Windows host (REQUIRED)
+  WINDOWS_USERNAME    - Windows RDP username (default: Administrator)
+  WINDOWS_PASSWORD    - Windows RDP password (REQUIRED)
+  BOUNDARY_LICENSE    - Boundary Enterprise license key (optional, can be in compose env)
 """
 
 import json
@@ -30,34 +39,21 @@ BOUNDARY_ADDR = os.environ.get("BOUNDARY_ADDR", "http://127.0.0.1:9220")
 MINIO_URL = os.environ.get("MINIO_URL", "http://127.0.0.1:9230")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin123")
-WINDOWS_HOST_IP = os.environ.get("WINDOWS_HOST_IP", "10.30.0.40")
-WINDOWS_RDP_PORT = "3389"
+WINDOWS_HOST_IP = os.environ.get("WINDOWS_HOST_IP", "")
+WINDOWS_RDP_PORT = os.environ.get("WINDOWS_RDP_PORT", "3389")
 WINDOWS_USERNAME = os.environ.get("WINDOWS_USERNAME", "Administrator")
-WINDOWS_PASSWORD = os.environ.get("WINDOWS_PASSWORD", "P@ssw0rd!23")
+WINDOWS_PASSWORD = os.environ.get("WINDOWS_PASSWORD", "")
 BUCKET_NAME = "boundary-session-recordings"
 
 
-def bcmd(args):
+def bcmd(args, token=None):
     """Run a boundary CLI command and return parsed JSON."""
     env = os.environ.copy()
     env["BOUNDARY_ADDR"] = BOUNDARY_ADDR
     env["BOUNDARY_KEYRING_TYPE"] = "none"
+    if token:
+        env["BOUNDARY_TOKEN"] = token
     cmd = ["boundary"] + args + ["-token", "env://BOUNDARY_TOKEN", "-format", "json"]
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    if r.returncode != 0:
-        return None, r.stderr
-    try:
-        return json.loads(r.stdout), None
-    except json.JSONDecodeError:
-        return None, f"Failed to parse JSON: {r.stdout}"
-
-
-def bcmd_raw(args):
-    """Run a boundary CLI command without token (for auth)."""
-    env = os.environ.copy()
-    env["BOUNDARY_ADDR"] = BOUNDARY_ADDR
-    env["BOUNDARY_KEYRING_TYPE"] = "none"
-    cmd = ["boundary"] + args + ["-format", "json"]
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         return None, r.stderr
@@ -118,7 +114,6 @@ def authenticate():
     data = json.loads(r.stdout)
     token = data.get("attributes", {}).get("token", {}).get("token", "")
     if not token:
-        # Try alternate path
         token = data.get("item", {}).get("attributes", {}).get("token", {}).get("token", "")
     if not token:
         print("FAILED: no token in response")
@@ -129,8 +124,7 @@ def authenticate():
 
 
 def create_org(token):
-    """Create the org."""
-    result, err = bcmd(["scopes", "create", "-name", "rdp-org", "-description", "RDP Computer Use Demo Org"])
+    result, err = bcmd(["scopes", "create", "-name", "rdp-org", "-description", "RDP Computer Use Demo Org"], token)
     if err:
         print(f"  Org creation error: {err}")
         return None
@@ -140,8 +134,7 @@ def create_org(token):
 
 
 def create_project(token, org_id):
-    """Create a project under the org."""
-    result, err = bcmd(["projects", "create", "-name", "rdp-project", "-description", "RDP Computer Use Demo Project", "-scope-id", org_id])
+    result, err = bcmd(["projects", "create", "-name", "rdp-project", "-description", "RDP Computer Use Demo Project", "-scope-id", org_id], token)
     if err:
         print(f"  Project creation error: {err}")
         return None
@@ -151,8 +144,7 @@ def create_project(token, org_id):
 
 
 def create_host_catalog(token, proj_id):
-    """Create a static host catalog."""
-    result, err = bcmd(["host-catalogs", "create", "static", "-name", "windows-hosts", "-scope-id", proj_id])
+    result, err = bcmd(["host-catalogs", "create", "static", "-name", "windows-hosts", "-scope-id", proj_id], token)
     if err:
         print(f"  Host catalog error: {err}")
         return None
@@ -162,30 +154,27 @@ def create_host_catalog(token, proj_id):
 
 
 def create_host(token, hc_id):
-    """Create a static host for the Windows VM."""
-    result, err = bcmd(["hosts", "create", "static", "-name", "windows-vm", "-host-catalog-id", hc_id, "-address", WINDOWS_HOST_IP])
+    result, err = bcmd(["hosts", "create", "static", "-name", "windows-remote", "-host-catalog-id", hc_id, "-address", WINDOWS_HOST_IP], token)
     if err:
         print(f"  Host error: {err}")
         return None
     host_id = result.get("item", {}).get("id", "")
-    print(f"  Host windows-vm ({WINDOWS_HOST_IP}): {host_id}")
+    print(f"  Host windows-remote ({WINDOWS_HOST_IP}): {host_id}")
     return host_id
 
 
 def create_host_set(token, hc_id, host_id):
-    """Create a host set containing the Windows host."""
-    result, err = bcmd(["host-sets", "create", "static", "-name", "windows-vm-set", "-host-catalog-id", hc_id, "-host-id", host_id])
+    result, err = bcmd(["host-sets", "create", "static", "-name", "windows-remote-set", "-host-catalog-id", hc_id, "-host-id", host_id], token)
     if err:
         print(f"  Host set error: {err}")
         return None
     hs_id = result.get("item", {}).get("id", "")
-    print(f"  Host Set windows-vm-set: {hs_id}")
+    print(f"  Host Set windows-remote-set: {hs_id}")
     return hs_id
 
 
 def create_credential_store(token, proj_id):
-    """Create a static credential store."""
-    result, err = bcmd(["credential-stores", "create", "static", "-name", "windows-creds", "-scope-id", proj_id])
+    result, err = bcmd(["credential-stores", "create", "static", "-name", "windows-creds", "-scope-id", proj_id], token)
     if err:
         print(f"  Credential store error: {err}")
         return None
@@ -195,7 +184,6 @@ def create_credential_store(token, proj_id):
 
 
 def create_credential(token, cs_id):
-    """Create a username/password credential for Windows."""
     env = os.environ.copy()
     env["BOUNDARY_ADDR"] = BOUNDARY_ADDR
     env["BOUNDARY_KEYRING_TYPE"] = "none"
@@ -221,16 +209,13 @@ def create_credential(token, cs_id):
 
 
 def create_storage_bucket(token, proj_id):
-    """Create a storage bucket for session recordings (MinIO/S3)."""
     env = os.environ.copy()
     env["BOUNDARY_ADDR"] = BOUNDARY_ADDR
     env["BOUNDARY_KEYRING_TYPE"] = "none"
     env["BOUNDARY_TOKEN"] = token
-    env["SECRET_KEY"] = MINIO_SECRET_KEY
 
-    # The storage bucket plugin uses the S3 plugin
-    # Attributes: bucket_name, region, access_key (via attributes)
-    # Secrets: secret_access_key (via secrets)
+    minio_internal = os.environ.get("MINIO_INTERNAL_URL", "http://10.30.0.30:9000")
+
     r = subprocess.run(
         ["boundary", "storage-buckets", "create",
          "-name", "session-recording-bucket",
@@ -241,7 +226,7 @@ def create_storage_bucket(token, proj_id):
              "bucket_name": BUCKET_NAME,
              "region": "us-east-1",
              "access_key": MINIO_ACCESS_KEY,
-             "endpoint": MINIO_URL.replace("127.0.0.1:9230", "10.30.0.30:9000"),
+             "endpoint": minio_internal,
          }),
          "-secrets", json.dumps({
              "secret_access_key": MINIO_SECRET_KEY,
@@ -261,15 +246,11 @@ def create_storage_bucket(token, proj_id):
 
 
 def create_tcp_target(token, proj_id, hs_id, cred_id, sb_id):
-    """Create a TCP target on port 3389 (RDP) with brokered credentials and session recording."""
     env = os.environ.copy()
     env["BOUNDARY_ADDR"] = BOUNDARY_ADDR
     env["BOUNDARY_KEYRING_TYPE"] = "none"
     env["BOUNDARY_TOKEN"] = token
 
-    # Create the target with session recording enabled
-    # For enterprise, we can set enable_session_recording and storage_bucket_id
-    # via the target attributes or update after creation
     cmd_args = [
         "targets", "create", "tcp",
         "-name", "windows-rdp",
@@ -278,7 +259,6 @@ def create_tcp_target(token, proj_id, hs_id, cred_id, sb_id):
         "-session-max-seconds", "3600",
     ]
 
-    # Add session recording flags if storage bucket was created
     if sb_id:
         cmd_args.extend(["-enable-session-recording", "-storage-bucket-id", sb_id])
 
@@ -293,14 +273,12 @@ def create_tcp_target(token, proj_id, hs_id, cred_id, sb_id):
     target_id = data.get("item", {}).get("id", "")
     print(f"  Target windows-rdp: {target_id}")
 
-    # Add host source
     if target_id and hs_id:
-        bcmd(["targets", "add-host-sources", "-id", target_id, "-host-source", hs_id])
+        bcmd(["targets", "add-host-sources", "-id", target_id, "-host-source", hs_id], token)
         print(f"    host source added")
 
-    # Add brokered credential source
     if target_id and cred_id:
-        bcmd(["targets", "add-credential-sources", "-id", target_id, "-brokered-credential-source", cred_id])
+        bcmd(["targets", "add-credential-sources", "-id", target_id, "-brokered-credential-source", cred_id], token)
         print(f"    brokered credential added")
 
     return target_id
@@ -310,6 +288,22 @@ def main():
     print("=== Demo 3: RDP Computer Use with Session Recording Bootstrap ===")
     print()
 
+    if not WINDOWS_HOST_IP:
+        print("ERROR: WINDOWS_HOST_IP is required.")
+        print("Set it to the IP or hostname of your remote Windows host:")
+        print("  export WINDOWS_HOST_IP=10.0.1.42")
+        sys.exit(1)
+
+    if not WINDOWS_PASSWORD:
+        print("ERROR: WINDOWS_PASSWORD is required.")
+        print("Set it to the RDP password for your Windows host:")
+        print("  export WINDOWS_PASSWORD=YourPassword123")
+        sys.exit(1)
+
+    print(f"Windows host: {WINDOWS_HOST_IP}:{WINDOWS_RDP_PORT}")
+    print(f"Windows user: {WINDOWS_USERNAME}")
+    print()
+
     if not wait_for_boundary():
         print("Boundary not available. Exiting.")
         sys.exit(1)
@@ -317,7 +311,6 @@ def main():
     wait_for_minio()
 
     token = authenticate()
-    os.environ["BOUNDARY_TOKEN"] = token
 
     print()
     print("=== Creating org and project ===")
