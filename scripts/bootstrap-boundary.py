@@ -33,6 +33,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 BOUNDARY_ADDR = os.environ.get("BOUNDARY_ADDR", "http://127.0.0.1:9220")
@@ -70,9 +71,15 @@ def wait_for_boundary():
         try:
             req = urllib.request.Request(f"{BOUNDARY_ADDR}/v1/scopes/global")
             req.add_header("Content-Type", "application/json")
-            urllib.request.urlopen(req, timeout=5)
+            resp = urllib.request.urlopen(req, timeout=5)
             print("OK")
             return True
+        except urllib.error.HTTPError as e:
+            # 401 means the API is up and responding, just needs auth
+            if e.code == 401:
+                print("OK")
+                return True
+            time.sleep(2)
         except Exception:
             time.sleep(2)
     print("FAILED")
@@ -112,9 +119,7 @@ def authenticate():
         print(f"FAILED: {r.stderr}")
         sys.exit(1)
     data = json.loads(r.stdout)
-    token = data.get("attributes", {}).get("token", {}).get("token", "")
-    if not token:
-        token = data.get("item", {}).get("attributes", {}).get("token", {}).get("token", "")
+    token = data.get("item", {}).get("attributes", {}).get("token", "")
     if not token:
         print("FAILED: no token in response")
         print(json.dumps(data, indent=2))
@@ -123,7 +128,33 @@ def authenticate():
     return token
 
 
+def find_existing_org(token, name="rdp-org"):
+    """Find an existing org by name."""
+    result, err = bcmd(["scopes", "list", "-scope-id", "global"], token)
+    if err or not result:
+        return None
+    for item in (result.get("items") or []):
+        if item.get("name") == name:
+            return item.get("id")
+    return None
+
+
+def find_existing_project(token, org_id, name="rdp-project"):
+    """Find an existing project by name under the org."""
+    result, err = bcmd(["scopes", "list", "-scope-id", org_id], token)
+    if err or not result:
+        return None
+    for item in (result.get("items") or []):
+        if item.get("name") == name:
+            return item.get("id")
+    return None
+
+
 def create_org(token):
+    existing = find_existing_org(token)
+    if existing:
+        print(f"  Org (existing): {existing}")
+        return existing
     result, err = bcmd(["scopes", "create", "-name", "rdp-org", "-description", "RDP Computer Use Demo Org"], token)
     if err:
         print(f"  Org creation error: {err}")
@@ -134,7 +165,11 @@ def create_org(token):
 
 
 def create_project(token, org_id):
-    result, err = bcmd(["projects", "create", "-name", "rdp-project", "-description", "RDP Computer Use Demo Project", "-scope-id", org_id], token)
+    existing = find_existing_project(token, org_id)
+    if existing:
+        print(f"  Project (existing): {existing}")
+        return existing
+    result, err = bcmd(["scopes", "create", "-name", "rdp-project", "-description", "RDP Computer Use Demo Project", "-scope-id", org_id], token)
     if err:
         print(f"  Project creation error: {err}")
         return None
@@ -164,12 +199,20 @@ def create_host(token, hc_id):
 
 
 def create_host_set(token, hc_id, host_id):
-    result, err = bcmd(["host-sets", "create", "static", "-name", "windows-remote-set", "-host-catalog-id", hc_id, "-host-id", host_id], token)
+    # Create the host set first, then add the host
+    result, err = bcmd(["host-sets", "create", "static", "-name", "windows-remote-set", "-host-catalog-id", hc_id], token)
     if err:
         print(f"  Host set error: {err}")
         return None
     hs_id = result.get("item", {}).get("id", "")
     print(f"  Host Set windows-remote-set: {hs_id}")
+    # Add the host to the host set
+    if hs_id and host_id:
+        _, err = bcmd(["host-sets", "add-hosts", "-id", hs_id, "-host", host_id], token)
+        if err:
+            print(f"  Warning: could not add host to set: {err}")
+        else:
+            print(f"    host added to set")
     return hs_id
 
 

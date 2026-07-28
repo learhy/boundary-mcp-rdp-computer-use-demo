@@ -4,7 +4,7 @@
 # The Windows host is NOT in this compose stack - it runs separately on AWS.
 #
 # Services:
-#   1. Boundary (controller + worker, enterprise dev mode) - ports 9220/9222
+#   1. Boundary (controller + worker, enterprise dev mode) - ports 9220/9322
 #   2. PostgreSQL (Boundary state store)
 #   3. MinIO (S3-compatible storage for session recordings)
 #
@@ -14,25 +14,35 @@
 #   - Set WINDOWS_HOST_IP to the public/private IP of your Windows host
 
 services:
-  # ── Boundary Controller + Worker (Enterprise) ──────────────────────────
+  # -- Boundary Controller + Worker (Enterprise) --
   boundary:
     image: hashicorp/boundary:latest
     container_name: rdp-demo-boundary
     ports:
       - "9220:9220"   # API
-      - "9222:9222"   # Proxy
+      - "9322:9322"   # Proxy (mapped to 9322 to avoid Chrome conflict on 9222)
+    command:
+      - "boundary"
+      - "dev"
+      - "-api-listen-address=0.0.0.0:9220"
+      - "-cluster-listen-address=0.0.0.0:9221"
+      - "-ops-listen-address=0.0.0.0:9223"
+      - "-proxy-listen-address=0.0.0.0:9322"
+      - "-controller-public-cluster-address=127.0.0.1:9221"
+      - "-worker-public-address=127.0.0.1:9322"
+      - "-host-address=localbox"
+      - "-target-default-port=3389"
+      - "-id-suffix=1234567890"
+      - "-secondary-id-suffix=0987654321"
+      - "-login-name=admin"
+      - "-password=adminadmin"
+      - "-unprivileged-login-name=user"
+      - "-unprivileged-password=useruseruser"
+      - "-skip-alias-target-creation"
+      - "-database-url=postgres://boundary:boundarypw@db:5432/boundary?sslmode=disable"
     environment:
       BOUNDARY_LICENSE: "${BOUNDARY_LICENSE:-}"
-    command: >
-      boundary dev
-      -bind=0.0.0.0
-      -admin-name=admin
-      -admin-password=adminadmin
-      -worker-public-address=127.0.0.1:9222
-      -database-url=postgres://boundary:boundarypw@db:5432/boundary?sslmode=disable
-      -host-address=127.0.0.1
-      -skip-alias-target-creation
-      -recovery-kms-type=none
+      BOUNDARY_DEV_LOG_LEVEL: info
     depends_on:
       db:
         condition: service_healthy
@@ -40,7 +50,7 @@ services:
       rdp-net:
         ipv4_address: 10.30.0.10
 
-  # ── PostgreSQL for Boundary ────────────────────────────────────────────
+  # -- PostgreSQL for Boundary --
   db:
     image: postgres:16-alpine
     container_name: rdp-demo-db
@@ -57,7 +67,7 @@ services:
       rdp-net:
         ipv4_address: 10.30.0.20
 
-  # ── MinIO (S3-compatible storage for session recordings) ───────────────
+  # -- MinIO (S3-compatible storage for session recordings) --
   minio:
     image: minio/minio:latest
     container_name: rdp-demo-minio

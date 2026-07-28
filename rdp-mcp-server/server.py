@@ -39,8 +39,8 @@ class RdpSession:
         self.xvfb_proc = None
         self.xfreerdp_proc = None
         self.display = ":99"
-        self.width = 1280
-        self.height = 720
+        self.width = 1920
+        self.height = 1080
         self.boundary_proc = None
         self.proxy_host = None
         self.proxy_port = None
@@ -217,6 +217,9 @@ sleep 999999
     session.proxy_port = proxy_info["port"]
 
     # Step 3: Start xfreerdp3 connected to the Boundary proxy
+    # Note: password is passed as a single argument with /p: prefix.
+    # FreeRDP3 parses / as flag prefix, so special chars in password (?, *, !)
+    # are safe as long as the whole /p:value is one shell argument.
     rdp_args = [
         "xfreerdp3",
         f"/v:{session.proxy_host}:{session.proxy_port}",
@@ -224,6 +227,7 @@ sleep 999999
         f"/p:{password}",
         f"/size:{width}x{height}",
         "/bpp:24",
+        "/cert:ignore",
         "-clipboard",
         "-decorations",
         "/smart-sizing",
