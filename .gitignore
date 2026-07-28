@@ -5,3 +5,8 @@ __pycache__/
 /tmp/
 .mcp.json.local
 docker/.env
+**/terraform.tfvars
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/.terraform.lock.hcl

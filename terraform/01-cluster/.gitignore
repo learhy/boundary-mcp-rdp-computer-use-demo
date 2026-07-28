@@ -1,4 +1,3 @@
-# Terraform and variable files
 *.tfvars
 .terraform/
 .terraform.lock.hcl

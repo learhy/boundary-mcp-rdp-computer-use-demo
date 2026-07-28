@@ -1,0 +1,8 @@
+# HCP Boundary variables - copy to terraform.tfvars and fill in
+
+hcp_client_id     = "YOUR_CLIENT_ID"
+hcp_client_secret = "YOUR_CLIENT_SECRET"
+
+boundary_cluster_id     = "rdp-demo-cluster"
+boundary_admin_username = "admin"
+boundary_admin_password = "AdminPass123!"
