@@ -1,0 +1,4 @@
+# RDP Computer Use MCP Server - Python dependencies
+# No external packages required beyond Python 3.10+ stdlib
+# System packages (install via apt):
+#   xvfb freerdp3-x11 xdotool scrot imagemagick

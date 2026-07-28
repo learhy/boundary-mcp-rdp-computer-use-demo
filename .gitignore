@@ -1,0 +1,6 @@
+*.pyc
+__pycache__/
+*.tar
+*.png
+/tmp/
+.mcp.json.local

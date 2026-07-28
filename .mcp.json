@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "boundary": {
+      "command": "/absolute/path/to/boundary-mcp/boundary-mcp",
+      "env": {
+        "BOUNDARY_ADDR": "http://127.0.0.1:9220",
+        "BOUNDARY_TOKEN": "PASTE_TOKEN_FROM_BOOTSTRAP",
+        "BOUNDARY_TLS_INSECURE": "true"
+      }
+    },
+    "rdp-computer-use": {
+      "command": "python3",
+      "args": ["/absolute/path/to/demo3-rdp-computer-use/rdp-mcp-server/server.py"],
+      "env": {
+        "BOUNDARY_ADDR": "http://127.0.0.1:9220",
+        "BOUNDARY_TOKEN": "PASTE_TOKEN_FROM_BOOTSTRAP"
+      }
+    }
+  }
+}
