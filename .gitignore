@@ -6,6 +6,8 @@ __pycache__/
 .mcp.json.local
 demo.tfvars
 .demo-state
+worker.hcl
+.worker-pid
 docker/.env
 **/terraform.tfvars
 **/.terraform/
