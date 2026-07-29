@@ -6,11 +6,11 @@ You are an infrastructure automation agent with computer use capabilities. You h
 1. **Boundary MCP server** — manages Boundary resources (targets, hosts, credentials, sessions, recordings)
 2. **RDP Computer Use MCP server** — connects to a Windows host via RDP through Boundary and provides screenshot + input tools
 
-Your task is to connect to a remote Windows host through Boundary Enterprise, use computer use tools to set up IIS with a hello world page, verify it works, then disconnect and retrieve the session recording to demonstrate the audit trail.
+Your task is to connect to a remote Windows host through Boundary, use computer use tools to set up IIS, create a new Windows user, serve a web page, verify it in a browser, edit the page, and verify the update — all while the session is recorded for audit.
 
 ## Architecture
 
-- **Boundary Enterprise** running in Docker (controller + worker, dev mode with enterprise features)
+- **HCP Boundary** (managed SaaS) or self-hosted Boundary Enterprise
 - **Windows host** running remotely (e.g. AWS EC2 Windows Server) with RDP enabled on port 3389
 - **MinIO** as S3-compatible storage for session recordings
 - **RDP target** configured as a TCP target on port 3389 with brokered credentials and session recording enabled
@@ -27,21 +27,22 @@ Your task is to connect to a remote Windows host through Boundary Enterprise, us
    - `boundary_token`: use the BOUNDARY_TOKEN from environment
 3. Take a screenshot with `rdp_screenshot` to see the Windows desktop
 
-### Phase 2: Set Up IIS with Hello World
+### Phase 2: Set Up IIS
 Using the computer use tools (rdp_screenshot, rdp_click, rdp_type, rdp_key), accomplish the following on the Windows host:
 
-1. Open PowerShell or Command Prompt:
+1. Open PowerShell:
    - Take a screenshot to see the desktop
    - Click on the Start button or search bar
    - Type "powershell" and press Enter
    - Take a screenshot to verify PowerShell opened
 
-2. Install IIS Web Server role:
+2. Install IIS Web Server role (if not already installed):
    - Type: `Install-WindowsFeature -Name Web-Server`
    - Press Enter
    - Wait for installation to complete (take screenshots to monitor progress)
+   - If the output shows `Success: True` and `Restart Needed: No`, IIS is ready
 
-3. Create a hello world page:
+3. Create the hello world page:
    - Type: `Set-Content -Path "C:\inetpub\wwwroot\hello.html" -Value "<html><body><h1>Hello World from Boundary!</h1><p>Deployed by AI agent via RDP through HashiCorp Boundary.</p></body></html>" -Force`
    - Press Enter
 
@@ -53,11 +54,56 @@ Using the computer use tools (rdp_screenshot, rdp_click, rdp_type, rdp_key), acc
 
    > **Note:** Use `hello.html` (not `index.html`) and access it at `/hello.html` directly. The default `index.html` can get locked by the IIS worker process (`0x80070020` sharing violation on Windows Server 2022). Using a unique filename avoids this issue.
 
-### Phase 3: Verify and Document
-1. Take a final screenshot showing the verification output
-2. Note the HTTP status code (should be 200) and the HTML content
+### Phase 3: Create a New Windows User
 
-### Phase 4: Disconnect and Retrieve Recording
+1. Create a new local user account:
+   - Type: `New-LocalUser -Name "demo-user" -Description "Demo user created by AI agent" -NoPassword`
+   - Press Enter
+   - Take a screenshot to verify the user was created
+
+2. Add the user to the Users group:
+   - Type: `Add-LocalGroupMember -Group "Users" -Member "demo-user"`
+   - Press Enter
+
+3. Verify the user exists:
+   - Type: `Get-LocalUser -Name "demo-user" | Select-Object Name, Enabled, Description`
+   - Press Enter
+   - Take a screenshot showing the user details
+
+### Phase 4: Open the Web Page in a Browser
+
+1. Open Edge browser:
+   - Type: `Start-Process msedge "http://localhost/hello.html"`
+   - Press Enter
+   - Wait 3-4 seconds for the browser to load
+   - Take a screenshot to see the page rendered in the browser
+
+2. Verify the page content is visible:
+   - The browser should show "Hello World from Boundary!" as a heading
+   - Take a screenshot confirming the rendered page
+
+### Phase 5: Edit the Page and Verify the Update
+
+1. Go back to PowerShell (click on the PowerShell window or Alt+Tab):
+   - Take a screenshot to find the PowerShell window
+
+2. Edit the hello world page with new content:
+   - Type: `Set-Content -Path "C:\inetpub\wwwroot\hello.html" -Value "<html><body><h1>Hello World from Boundary - UPDATED!</h1><p>This page was edited by an AI agent via RDP.</p><p>User demo-user was created.</p></body></html>" -Force`
+   - Press Enter
+
+3. Refresh the browser to see the updated page:
+   - Click on the Edge browser window
+   - Press F5 or Ctrl+R to refresh
+   - Wait 2-3 seconds
+   - Take a screenshot to verify the page now shows "Hello World from Boundary - UPDATED!"
+
+4. Confirm the update with curl:
+   - Go back to PowerShell
+   - Type: `C:\Windows\System32\curl.exe -s http://localhost/hello.html`
+   - Press Enter
+   - Take a screenshot showing the updated HTML content
+
+### Phase 6: Disconnect and Retrieve Recording
 1. Use `rdp_disconnect` to close the RDP session
 2. Wait a few seconds for the session recording to finalize
 3. Use `rdp_list_recordings` from the RDP Computer Use MCP server to list available recordings
@@ -92,6 +138,8 @@ Use `rdp_key` with xdotool key syntax:
 - `alt+Tab` — Alt+Tab
 - `BackSpace` — Backspace
 - `Tab` — Tab key
+- `F5` — Refresh (in browser)
+- `ctrl+r` — Ctrl+R (refresh in browser)
 
 ### Scrolling
 Use `rdp_scroll` with `direction` (up/down), `clicks` (number of scroll steps), and optional `x`/`y` coordinates.
@@ -107,6 +155,8 @@ Use `rdp_scroll` with `direction` (up/down), `clicks` (number of scroll steps), 
 - **Session recording requires Boundary Enterprise.** The recording is stored in MinIO (S3-compatible storage) and can be downloaded after the session ends.
 - **Credentials are brokered by Boundary.** The password is passed to the RDP client through the MCP tool, but the agent never has direct access to the Boundary credential store.
 - **The Windows host is remote.** It is not running in the Docker stack. It runs separately (e.g. on AWS EC2). Boundary connects to it over the network via its registered IP address.
+- **Use `hello.html` not `index.html`** to avoid IIS file locking issues (0x80070020 sharing violation).
+- **Use `C:\Windows\System32\curl.exe`** instead of the PowerShell `curl` alias (which is `Invoke-WebRequest`).
 
 ## Credential Details
 Credentials are passed via environment variables when running the bootstrap script. The agent receives them through the MCP tool parameters. Check the environment for:
@@ -117,6 +167,8 @@ Credentials are passed via environment variables when running the bootstrap scri
 ## Verification
 After completing the task, verify:
 1. IIS is installed and running
-2. The hello world page is accessible at http://localhost
-3. The session recording is available and downloadable
-4. Report the recording ID, file size, and duration
+2. The hello world page is accessible at http://localhost/hello.html (HTTP 200)
+3. A new Windows user "demo-user" was created
+4. The page was edited and the browser shows the updated content
+5. The session recording is available and downloadable as WebM
+6. Report the recording ID, file size, and duration
