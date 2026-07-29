@@ -123,22 +123,20 @@ resource "boundary_credential_username_password" "windows_admin" {
 }
 
 resource "boundary_storage_bucket" "recordings" {
-  count       = var.enable_recording ? 1 : 0
-  name        = "session-recording-bucket"
-  description = "MinIO S3 bucket for RDP session recordings"
-  scope_id    = boundary_scope.org.id
-  bucket_name = var.minio_bucket_name
-  plugin_name = "aws"
-  # HCP-managed workers have the tag: boundary.cloud.hashicorp.com:managed = true
-  # For self-hosted workers, use: "true" in "/tags/all"
-  worker_filter = "\"true\" in \"/tags/boundary.cloud.hashicorp.com:managed\""
+  count         = var.enable_recording ? 1 : 0
+  name          = "session-recording-bucket"
+  description   = "MinIO S3 bucket for RDP session recordings"
+  scope_id      = boundary_scope.org.id
+  bucket_name   = var.minio_bucket_name
+  plugin_name   = "minio"
+  worker_filter = "\"worker-session-recording\" in \"/tags/type\""
   attributes_json = jsonencode({
-    bucket_name = var.minio_bucket_name
-    region      = "us-east-1"
-    access_key  = var.minio_access_key
-    endpoint    = var.minio_endpoint
+    endpoint_url                = var.minio_endpoint
+    region                      = "us-east-1"
+    disable_credential_rotation = true
   })
   secrets_json = jsonencode({
+    access_key_id     = var.minio_access_key
     secret_access_key = var.minio_secret_key
   })
 }
@@ -153,7 +151,7 @@ resource "boundary_target" "windows_rdp" {
   brokered_credential_source_ids = [boundary_credential_username_password.windows_admin.id]
   session_max_seconds            = 3600
   enable_session_recording       = var.enable_recording
-  storage_bucket_id              = var.enable_recording ? boundary_storage_bucket.recordings[0].id : null
+  storage_bucket_id              = var.enable_recording ? "sb_BgcbN7eRwj" : null
 }
 
 output "target_id" {

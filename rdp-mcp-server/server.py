@@ -245,6 +245,7 @@ def tool_connect_rdp(params):
         "-clipboard",
         "-decorations",
         "/smart-sizing",
+        "/gfx",  # Enable RDP 8.0+ graphics pipeline (required for BSR WebM export)
     ]
 
     if domain:
@@ -591,6 +592,137 @@ def tool_rdp_download_recording(params):
     }
 
 
+def tool_rdp_export_recording(params):
+    """Export a session recording as WebM video and download it.
+
+    This handles HCP Boundary's export flow:
+    1. Trigger export via 'boundary session-recordings export'
+    2. Poll until state=finished
+    3. Download the WebM from MinIO (HCP stores exports in the worker's storage bucket)
+    """
+    recording_id = params.get("recording_id", "")
+    output_path = params.get("output_path", f"/tmp/rdp-export-{recording_id}.webm")
+    mime_type = params.get("mime_type", "video/webm")
+
+    if not recording_id:
+        return {"error": "recording_id is required (use the session recording sr_ ID)"}
+
+    boundary_addr = params.get("boundary_addr", os.environ.get("BOUNDARY_ADDR", "http://127.0.0.1:9220"))
+    boundary_token = params.get("boundary_token", os.environ.get("BOUNDARY_TOKEN", ""))
+
+    if not boundary_token:
+        return {"error": "boundary_token is required"}
+
+    minio_endpoint = params.get("minio_endpoint", os.environ.get("MINIO_ENDPOINT", ""))
+    minio_access_key = params.get("minio_access_key", os.environ.get("MINIO_ACCESS_KEY", ""))
+    minio_secret_key = params.get("minio_secret_key", os.environ.get("MINIO_SECRET_KEY", ""))
+    minio_bucket = params.get("minio_bucket", os.environ.get("MINIO_BUCKET", "boundary-session-recordings"))
+
+    env = os.environ.copy()
+    env["BOUNDARY_ADDR"] = boundary_addr
+    env["BOUNDARY_KEYRING_TYPE"] = "none"
+    env["BOUNDARY_TOKEN"] = boundary_token
+
+    # Step 1: Read the recording to get the connection recording ID
+    read_result = subprocess.run(
+        ["boundary", "session-recordings", "read", "-id", recording_id,
+         "-token", "env://BOUNDARY_TOKEN", "-format", "json"],
+        capture_output=True, text=True, env=env, timeout=30
+    )
+    if read_result.returncode != 0:
+        return {"error": f"Failed to read recording: {read_result.stderr[:500]}"}
+
+    rec_data = json.loads(read_result.stdout)
+    item = rec_data.get("item", rec_data)
+    conn_recs = item.get("connection_recordings", [])
+    if not conn_recs:
+        return {"error": "No connection recordings found in this session recording"}
+    conn_rec_id = conn_recs[0]["id"]
+
+    # Step 2: Trigger the export
+    export_result = subprocess.run(
+        ["boundary", "session-recordings", "export",
+         "-connection-recording-id", conn_rec_id,
+         "-mime-type", mime_type,
+         "-token", "env://BOUNDARY_TOKEN", "-format", "json"],
+        capture_output=True, text=True, env=env, timeout=60
+    )
+    if export_result.returncode != 0:
+        return {"error": f"Export failed: {export_result.stderr[:500]}"}
+
+    export_data = json.loads(export_result.stdout)
+    export_id = export_data.get("item", export_data).get("id", "")
+    if not export_id:
+        return {"error": "No export ID returned"}
+
+    # Step 3: Poll until finished
+    for i in range(40):
+        time.sleep(3)
+        status_result = subprocess.run(
+            ["boundary", "session-recordings", "export", "read",
+             "-id", export_id, "-token", "env://BOUNDARY_TOKEN", "-format", "json"],
+            capture_output=True, text=True, env=env, timeout=20
+        )
+        if status_result.returncode != 0:
+            continue
+        status_data = json.loads(status_result.stdout)
+        state = status_data.get("item", status_data).get("state", "?")
+        if state == "finished":
+            break
+        if state == "failed":
+            return {"error": f"Export failed on worker", "export_id": export_id}
+    else:
+        return {"error": "Export timed out after 120s", "export_id": export_id}
+
+    # Step 4: Download the WebM from MinIO
+    # HCP Boundary stores exports at: {recording_id}.export/{conn_rec_id}.export/srv_{id}/srv_{id}.webm
+    if not minio_endpoint or not minio_access_key or not minio_secret_key:
+        return {
+            "status": "export_finished",
+            "export_id": export_id,
+            "connection_recording_id": conn_rec_id,
+            "message": "Export completed but MinIO credentials not provided. The WebM is stored in the worker's storage bucket.",
+            "webm_path_in_minio": f"{recording_id}.export/{conn_rec_id}.export/",
+        }
+
+    try:
+        import boto3
+    except ImportError:
+        return {"error": "boto3 not installed", "export_id": export_id}
+
+    s3 = boto3.client("s3",
+        endpoint_url=minio_endpoint,
+        aws_access_key_id=minio_access_key,
+        aws_secret_access_key=minio_secret_key,
+        region_name="us-east-1"
+    )
+
+    # List objects in the export prefix to find the WebM file
+    prefix = f"{recording_id}.export/{conn_rec_id}.export/"
+    objects = s3.list_objects_v2(Bucket=minio_bucket, Prefix=prefix)
+    webm_key = None
+    for obj in objects.get("Contents", []):
+        if obj["Key"].endswith(".webm"):
+            webm_key = obj["Key"]
+            break
+
+    if not webm_key:
+        return {"error": "No .webm file found in export path", "prefix": prefix, "export_id": export_id}
+
+    s3.download_file(minio_bucket, webm_key, output_path)
+    size = os.path.getsize(output_path)
+
+    return {
+        "status": "exported",
+        "recording_id": recording_id,
+        "export_id": export_id,
+        "connection_recording_id": conn_rec_id,
+        "output_path": output_path,
+        "size_bytes": size,
+        "mime_type": mime_type,
+    }
+
+
 # ── Tool Registry ────────────────────────────────────────────────────────
 
 TOOLS = {
@@ -724,6 +856,25 @@ TOOLS = {
             "required": ["recording_id"],
         },
         "handler": tool_rdp_download_recording,
+    },
+    "rdp_export_recording": {
+        "description": "Export a session recording as WebM video and download it. Triggers the Boundary export, waits for it to finish, then downloads the WebM from MinIO storage. Requires MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY env vars (or pass as parameters).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recording_id": {"type": "string", "description": "The session recording ID (sr_ prefix) to export."},
+                "output_path": {"type": "string", "description": "Path to save the WebM video file."},
+                "mime_type": {"type": "string", "description": "Export mime type.", "default": "video/webm"},
+                "boundary_addr": {"type": "string", "description": "Boundary API address."},
+                "boundary_token": {"type": "string", "description": "Boundary auth token."},
+                "minio_endpoint": {"type": "string", "description": "MinIO S3 endpoint URL."},
+                "minio_access_key": {"type": "string", "description": "MinIO access key."},
+                "minio_secret_key": {"type": "string", "description": "MinIO secret key."},
+                "minio_bucket": {"type": "string", "description": "MinIO bucket name.", "default": "boundary-session-recordings"},
+            },
+            "required": ["recording_id"],
+        },
+        "handler": tool_rdp_export_recording,
     },
 }
 

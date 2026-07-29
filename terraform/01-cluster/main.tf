@@ -49,7 +49,7 @@ resource "hcp_boundary_cluster" "rdp_demo" {
   cluster_id = var.boundary_cluster_id
   username   = var.boundary_admin_username
   password   = var.boundary_admin_password
-  tier       = "Standard"
+  tier       = "Plus"
 }
 
 output "boundary_cluster_url" {
