@@ -46,6 +46,7 @@ IBM Bob (agent)
             +-- rdp_disconnect --> kill xfreerdp3 + Xvfb
             +-- rdp_list_recordings --> boundary session-recordings list
             +-- rdp_download_recording --> boundary session-recordings download
+            +-- rdp_export_recording --> boundary export → poll → MinIO download (WebM)
 
                     [Internet / VPC]
                           |
@@ -303,7 +304,28 @@ ibm-bob --config .mcp.json
 16. Calls `rdp_download_recording` to download the recording
 17. Reports the recording ID, file size, and duration
 
-### Step 8: Access and replay the session recording
+### Step 8: Export the session recording as WebM video
+
+After the agent completes its task and the session is disconnected, export the recording as a WebM video:
+
+```bash
+# Set MinIO credentials for the export download
+export MINIO_ENDPOINT=http://178.104.180.23:9230
+export MINIO_ACCESS_KEY=minioadmin
+export MINIO_SECRET_KEY=minioadmin123
+
+# Export via the RDP MCP server tool (if running the agent)
+# The agent calls rdp_export_recording with the session recording ID
+
+# Or manually: trigger export via boundary CLI, then download from MinIO
+boundary session-recordings export -connection-recording-id <cr_ID> -mime-type video/webm
+# Poll until state=finished, then download the .webm from MinIO at:
+#   {recording_id}.export/{connection_recording_id}.export/srv_*/srv_*.webm
+```
+
+The WebM export requires the `/gfx` flag in xfreerdp3 (enabled by default in the RDP MCP server). This enables the RDP 8.0+ graphics pipeline, which is required for the BSR recording to include the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel. Without it, the WebM export will fail.
+
+### Step 9: Access and replay the session recording
 
 After the agent completes its task, you can retrieve and play back the session recording:
 
@@ -431,6 +453,19 @@ Org: rdp-org
 - Check Boundary logs for recording errors: `docker logs rdp-demo-boundary 2>&1 | grep -i recording`
 - The recording may take a few seconds to finalize after session end
 - Try listing recordings: `BOUNDARY_ADDR=http://127.0.0.1:9220 python3 scripts/retrieve-recordings.py`
+
+### WebM export fails (no graphics channel)
+- The `/gfx` flag must be present in the xfreerdp3 args (it is by default in the RDP MCP server)
+- Without `/gfx`, the BSR recording lacks the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel
+- The export will complete but the WebM will be empty or fail to render
+- **Do NOT use `/gfx:on`** — FreeRDP 3.30.0 rejects this syntax. Use the bare `/gfx` flag.
+
+### IIS returns HTTP 500 (0x80070020 sharing violation)
+- On Windows Server 2022, the default `index.html` in `C:\inetpub\wwwroot` can get locked by the IIS worker process
+- Use a unique filename like `hello.html` instead of `index.html`
+- Access the page at `http://localhost/hello.html` (not the root)
+- Use `C:\Windows\System32\curl.exe` instead of the PowerShell `curl` alias (which is `Invoke-WebRequest`)
+- If the file is already locked: `iisreset /stop`, `Get-Process w3wp | Stop-Process -Force`, then create a new file
 
 ### Port conflicts
 - This demo uses ports 9220-9222 (Boundary), 9230-9231 (MinIO)

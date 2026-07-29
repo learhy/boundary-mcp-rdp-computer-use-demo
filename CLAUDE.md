@@ -42,13 +42,16 @@ Using the computer use tools (rdp_screenshot, rdp_click, rdp_type, rdp_key), acc
    - Wait for installation to complete (take screenshots to monitor progress)
 
 3. Create a hello world page:
-   - Type: `Set-Content -Path "C:\inetpub\wwwroot\index.html" -Value "<html><body><h1>Hello World from Boundary!</h1><p>Deployed by AI agent via RDP through HashiCorp Boundary.</p></body></html>"`
+   - Type: `Set-Content -Path "C:\inetpub\wwwroot\hello.html" -Value "<html><body><h1>Hello World from Boundary!</h1><p>Deployed by AI agent via RDP through HashiCorp Boundary.</p></body></html>" -Force`
    - Press Enter
 
 4. Verify IIS is serving the page:
-   - Type: `Invoke-WebRequest -Uri http://localhost -UseBasicParsing | Select-Object StatusCode, Content`
+   - Type: `C:\Windows\System32\curl.exe -s http://localhost/hello.html`
    - Press Enter
-   - Take a screenshot to see the response
+   - Take a screenshot to see the response (should show the Hello World HTML)
+   - Also check the HTTP status: `C:\Windows\System32\curl.exe -s -o NUL -w "HTTP_STATUS:%{http_code}" http://localhost/hello.html` (should be 200)
+
+   > **Note:** Use `hello.html` (not `index.html`) and access it at `/hello.html` directly. The default `index.html` can get locked by the IIS worker process (`0x80070020` sharing violation on Windows Server 2022). Using a unique filename avoids this issue.
 
 ### Phase 3: Verify and Document
 1. Take a final screenshot showing the verification output
@@ -58,9 +61,12 @@ Using the computer use tools (rdp_screenshot, rdp_click, rdp_type, rdp_key), acc
 1. Use `rdp_disconnect` to close the RDP session
 2. Wait a few seconds for the session recording to finalize
 3. Use `rdp_list_recordings` from the RDP Computer Use MCP server to list available recordings
-4. Find the recording for your session (most recent)
-5. Use `rdp_download_recording` to download the recording
-6. Report the recording details (ID, size, duration, MIME types)
+4. Find the recording for your session (most recent, state=available)
+5. Use `rdp_export_recording` to export the recording as WebM video and download it
+   - Pass the `recording_id` (the `sr_` ID), and MinIO credentials via environment or parameters
+   - The tool triggers the export, waits for it to finish, then downloads the WebM from MinIO
+6. Report the recording details (ID, size, duration, WebM file path)
+7. Verify the WebM is valid (use `ffprobe` or play with a media player)
 
 ## How to Use the Computer Use Tools
 
