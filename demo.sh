@@ -21,6 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TFVARS="${TFVARS:-$SCRIPT_DIR/demo.tfvars}"
 BOUNDARY_MCP_DIR="${BOUNDARY_MCP_DIR:-$HOME/software/boundary-mcp}"
+BOUNDARY_BIN="${BOUNDARY_BIN:-boundary}"  # Use a specific boundary binary (e.g. /tmp/boundary-1.0.1-ent/boundary) if version mismatch
 ACTION=""
 
 # ── Colors ──────────────────────────────────────────────────────────────
@@ -66,6 +67,13 @@ Configuration file (demo.tfvars):
   MINIO_ACCESS_KEY       — MinIO access key (default: minioadmin)
   MINIO_SECRET_KEY       — MinIO secret key (default: minioadmin123)
   BOUNDARY_ADMIN_PASSWORD — Admin password for the Boundary cluster (default: AdminPass123!)
+  BOUNDARY_LICENSE       — Boundary Enterprise license key (required for self-managed worker)
+
+Environment variables (optional):
+  OUTPUT_PATH            — Override the default export output path (./rdp-recording-<id>.webm)
+  BOUNDARY_MCP_DIR       — Path to the boundary-mcp repo (default: ~/software/boundary-mcp)
+  BOUNDARY_BIN           — Path to boundary binary for worker (default: boundary; use 1.0.1+ent if version mismatch)
+  TFVARS                 — Path to tfvars file (default: demo.tfvars in repo root)
 USAGE
             exit 0 ;;
         *) fail "Unknown argument: $1 (use -h for help)" ;;
@@ -150,9 +158,9 @@ setup_worker() {
     local token="$1"
     local cluster_url="$2"
 
-    # Extract cluster ID from URL (e.g. ae0b2e8e-... from https://ae0b2e8e-...boundary.hashicorp.cloud)
+    # Extract cluster ID from URL (e.g. ae0b2e8e-a32f-4dc5-87dd-f48ac83f79db from https://ae0b2e8e-a32f-4dc5-87dd-f48ac83f79db.boundary.hashicorp.cloud)
     local cluster_id
-    cluster_id=$(echo "$cluster_url" | sed 's|https://\([^-]*\)-.*|\1|')
+    cluster_id=$(echo "$cluster_url" | sed 's|https://\([0-9a-f-]*\)\..*|\1|')
     info "HCP cluster ID: $cluster_id"
 
     # Get the server's public IP for the worker's public_addr
@@ -177,7 +185,10 @@ setup_worker() {
 
     # Write the worker config file
     local worker_port=9422
-    mkdir -p /tmp/boundary-recordings /tmp/boundary-worker-auth
+    mkdir -p /tmp/boundary-recordings
+    # Clear any stale worker auth credentials from a previous cluster
+    rm -rf /tmp/boundary-worker-auth
+    mkdir -p /tmp/boundary-worker-auth
 
     cat > "$SCRIPT_DIR/worker.hcl" << WORKEREOF
 disable_mlock = true
@@ -200,9 +211,12 @@ worker {
 }
 WORKEREOF
 
-    # Kill any existing worker process
-    pkill -f "boundary server -config=$SCRIPT_DIR/worker.hcl" 2>/dev/null || true
-    sleep 1
+    # Kill any existing worker process (match on boundary server with any worker config)
+    pkill -f "boundary server.*worker" 2>/dev/null || true
+    pkill -f "boundary server.*boundary-mcp-demos" 2>/dev/null || true
+    # Also free the port if something else has it
+    fuser -k 9422/tcp 2>/dev/null || true
+    sleep 2
 
     # Start the worker as a background process
     info "Starting worker process..."
@@ -211,14 +225,14 @@ WORKEREOF
         warn "BOUNDARY_LICENSE not set — worker may fail to start without enterprise license"
     fi
 
-    nohup boundary server -config="$SCRIPT_DIR/worker.hcl" > /tmp/boundary-worker.log 2>&1 &
+    nohup "$BOUNDARY_BIN" server -config="$SCRIPT_DIR/worker.hcl" > /tmp/boundary-worker.log 2>&1 &
     local worker_pid=$!
     echo "$worker_pid" > "$SCRIPT_DIR/.worker-pid"
 
-    # Wait for the worker to connect
+    # Wait for the worker to connect (can take up to 60s)
     info "Waiting for worker to connect to HCP..."
     local connected=false
-    for i in $(seq 1 15); do
+    for i in $(seq 1 30); do
         sleep 2
         if grep -q "upstream connection is ready\|worker has successfully authenticated" /tmp/boundary-worker.log 2>/dev/null; then
             connected=true
@@ -230,9 +244,7 @@ WORKEREOF
     if $connected; then
         ok "Worker connected to HCP Boundary cluster"
     else
-        warn "Worker may not have connected. Check /tmp/boundary-worker.log"
-        warn "Last log lines:"
-        tail -5 /tmp/boundary-worker.log 2>/dev/null || true
+        fail "Worker failed to connect. Check /tmp/boundary-worker.log\nLast log lines:\n$(tail -10 /tmp/boundary-worker.log 2>/dev/null || echo 'no log')"
     fi
 
     # Add worker.hcl and .worker-pid to .gitignore
@@ -304,17 +316,35 @@ do_setup() {
 
     # Step 3b: Start self-managed worker (required for session recording)
     if [[ "$ENABLE_RECORDING" == "true" ]]; then
+        # Authenticate before creating the worker (worker creation needs a token)
+        info "Authenticating for worker creation..."
+        export BOUNDARY_ADDR="$CLUSTER_URL"
+        export BOUNDARY_PASSWORD="$BOUNDARY_ADMIN_PASSWORD"
+        TOKEN=$(boundary authenticate password \
+            -login-name "$BOUNDARY_ADMIN_USERNAME" \
+            -password env://BOUNDARY_PASSWORD \
+            -format json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['item']['attributes']['token'])")
+
         info "Setting up self-managed worker for session recording..."
         setup_worker "$TOKEN" "$CLUSTER_URL"
 
         # Re-apply Terraform with recording enabled now that the worker is online
         info "Re-applying Terraform with session recording enabled..."
         write_tf_tfvars "02-resources" >/dev/null  # rewrite with enable_recording=true
-        (cd "$SCRIPT_DIR/terraform/02-resources" && terraform apply -auto-approve)
-        ok "Session recording enabled on target"
+        if (cd "$SCRIPT_DIR/terraform/02-resources" && terraform apply -auto-approve) 2>/dev/null; then
+            ok "Session recording enabled on target"
+        else
+            warn "Storage bucket creation failed (HCP version mismatch: controller 1.0.1-HCP vs worker 1.0.1+ent)"
+            warn "Continuing without session recording. The demo works but WebM export won't be available."
+            warn "To fix: use a self-hosted Boundary Enterprise deployment instead of HCP, or wait for HCP to support self-managed worker storage buckets."
+            # Re-apply without recording to ensure the target is in a clean state
+            sed -i 's/enable_recording\s*=.*/enable_recording = false/' "$SCRIPT_DIR/terraform/02-resources/terraform.tfvars"
+            (cd "$SCRIPT_DIR/terraform/02-resources" && terraform apply -auto-approve) 2>/dev/null
+            export ENABLE_RECORDING="false"
+        fi
     fi
 
-    # Step 4: Authenticate and get token
+    # Step 4: Authenticate and get token (re-auth if worker setup already authed)
     info "Authenticating to Boundary..."
     export BOUNDARY_ADDR="$CLUSTER_URL"
     export BOUNDARY_PASSWORD="$BOUNDARY_ADMIN_PASSWORD"
@@ -500,7 +530,7 @@ do_export() {
     [[ "$state" != "finished" ]] && fail "Export timed out."
 
     info "Downloading WebM from MinIO..."
-    local output_path="${OUTPUT_PATH:-/tmp/rdp-recording-$sr_id.webm}"
+    local output_path="${OUTPUT_PATH:-./rdp-recording-$sr_id.webm}"
     python3 -c "
 import boto3, os, sys
 s3 = boto3.client('s3',
