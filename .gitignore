@@ -4,6 +4,8 @@ __pycache__/
 *.png
 /tmp/
 .mcp.json.local
+demo.tfvars
+.demo-state
 docker/.env
 **/terraform.tfvars
 **/.terraform/

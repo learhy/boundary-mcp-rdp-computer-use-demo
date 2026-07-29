@@ -1,0 +1,39 @@
+# demo.tfvars — Configuration for the Boundary MCP RDP Computer Use Demo
+#
+# Copy this file to demo.tfvars and fill in your values:
+#   cp demo.tfvars.example demo.tfvars
+#   # Edit demo.tfvars with your credentials
+#
+# Then run:  ./demo.sh --setup
+
+# ── HCP Boundary (required for session recording) ──────────────────────
+# Get these from: HCP Console → Settings → Service Accounts → Create
+HCP_SP_CLIENT_ID="YOUR_HCP_SERVICE_PRINCIPAL_CLIENT_ID"
+HCP_SP_CLIENT_SECRET="YOUR_HCP_SERVICE_PRINCIPAL_CLIENT_SECRET"
+
+# ── Windows host (RDP target) ───────────────────────────────────────────
+# The Windows host's public IP or DNS name (must be reachable from the worker)
+WINDOWS_HOST_IP="ec2-xx-xx-xx-xx.compute.amazonaws.com"
+WINDOWS_USERNAME="Administrator"
+WINDOWS_PASSWORD="YOUR_WINDOWS_ADMINISTRATOR_PASSWORD"
+
+# ── MinIO storage (for session recordings) ──────────────────────────────
+# Must be publicly reachable from the Boundary worker for recording upload.
+# If running MinIO locally via docker compose, use your server's public IP.
+MINIO_ENDPOINT="http://YOUR_SERVER_PUBLIC_IP:9230"
+MINIO_ACCESS_KEY="minioadmin"
+MINIO_SECRET_KEY="minioadmin123"
+MINIO_BUCKET_NAME="boundary-session-recordings"
+
+# ── Boundary admin (defaults are fine) ─────────────────────────────────
+BOUNDARY_ADMIN_USERNAME="admin"
+BOUNDARY_ADMIN_PASSWORD="AdminPass123!"
+BOUNDARY_CLUSTER_ID="rdp-demo-cluster"
+
+# ── Boundary Enterprise license (required for self-managed worker) ─────
+# Get this from HCP Console or your HashiCorp sales rep
+BOUNDARY_LICENSE="YOUR_BOUNDARY_ENTERPRISE_LICENSE_KEY"
+
+# ── Recording toggle ───────────────────────────────────────────────────
+# Set to false if MinIO is not publicly reachable from the worker
+ENABLE_RECORDING=true

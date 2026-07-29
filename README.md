@@ -85,7 +85,32 @@ sudo apt install xvfb freerdp3-x11 xdotool scrot imagemagick
 4. Set the Administrator password (or use the EC2 key pair retrieval)
 5. Verify RDP is enabled (it is by default on AWS Windows AMIs)
 
-## Step-by-Step Reproduction
+## Quick Start
+
+```bash
+# 1. Clone repos
+git clone https://github.com/learhy/boundary-mcp.git ~/software/boundary-mcp
+git clone https://github.com/learhy/boundary-mcp-rdp-computer-use-demo.git
+
+# 2. Configure
+cd boundary-mcp-rdp-computer-use-demo
+cp demo.tfvars.example demo.tfvars
+# Edit demo.tfvars with your HCP SP credentials + Windows host + MinIO endpoint
+
+# 3. Provision everything (builds boundary-mcp, creates HCP cluster, provisions resources, generates .mcp.json)
+./demo.sh --setup
+
+# 4. Run the agent
+./demo.sh --run
+
+# 5. Export the session recording as WebM
+./demo.sh --export <sr_ID>
+
+# 6. Tear everything down when done
+./demo.sh --teardown
+```
+
+## Manual Step-by-Step Reproduction
 
 ### Step 1: Clone the repos
 
@@ -475,8 +500,10 @@ Org: rdp-org
 
 ```
 boundary-mcp-rdp-computer-use-demo/
-+-- README.md                          # This file
-+-- TOOLS_EVAL.md                      # RDP tool evaluation and selection rationale
++-- demo.sh                          # One-command setup/run/teardown/export script
++-- demo.tfvars.example              # Configuration template (copy to demo.tfvars)
++-- README.md                        # This file
++-- TOOLS_EVAL.md                    # RDP tool evaluation and selection rationale
 +-- CLAUDE.md                          # Agent prompt for IBM Bob
 +-- .mcp.json                          # MCP server config (template)
 +-- docker/
