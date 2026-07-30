@@ -38,7 +38,7 @@ class RdpSession:
     def __init__(self):
         self.xvfb_proc = None
         self.xfreerdp_proc = None
-        self.display = ":99"
+        self.display = ":100"
         self.width = 1920
         self.height = 1080
         self.boundary_proc = None
@@ -150,31 +150,27 @@ def tool_connect_rdp(params):
     session.width = width
     session.height = height
 
-    # Step 1: Start Xvfb (virtual framebuffer) — or reuse if already running
-    # Check if Xvfb is already running on our display
-    xvfb_already_running = False
+    # Step 1: Start Xvfb (virtual framebuffer) — always kill existing first
+    # If Xvfb is already running on our display at the wrong resolution,
+    # xfreerdp3 will render at the wrong size and clicks will be offset.
+    # Kill any existing Xvfb on our display to ensure a clean start.
     try:
-        result = subprocess.run(["xdpyinfo", "-display", session.display],
-                                capture_output=True, timeout=3)
-        if result.returncode == 0:
-            xvfb_already_running = True
+        subprocess.run(["pkill", "-f", f"Xvfb {session.display}"],
+                       capture_output=True, timeout=5)
+        time.sleep(1)
     except Exception:
         pass
 
-    if not xvfb_already_running:
-        session.xvfb_proc = subprocess.Popen(
-            ["Xvfb", session.display, "-screen", f"0", f"{width}x{height}x24"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(1)  # Wait for Xvfb to start
+    session.xvfb_proc = subprocess.Popen(
+        ["Xvfb", session.display, "-screen", f"0", f"{width}x{height}x24"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(1)  # Wait for Xvfb to start
 
-        # Verify Xvfb is running
-        if session.xvfb_proc.poll() is not None:
-            return {"error": "Failed to start Xvfb virtual framebuffer"}
-    else:
-        # Xvfb already running, just use it
-        pass
+    # Verify Xvfb is running
+    if session.xvfb_proc.poll() is not None:
+        return {"error": "Failed to start Xvfb virtual framebuffer"}
 
     # Step 2: Authorize a session and get the proxy port
     # Run boundary connect — it prints proxy info (including Port:) to stderr
@@ -267,7 +263,7 @@ def tool_connect_rdp(params):
     if session.xfreerdp_proc.poll() is not None:
         stderr_data = session.xfreerdp_proc.stderr.read().decode("utf-8", errors="replace")
         session.cleanup()
-        return {"error": f"xfreerdp3 failed to start. stderr: {stderr_data[:500]}"}
+        return {"error": f"xfreerdp3 failed to start. stderr: {stderr_data[:2000]}"}
 
     session.connected = True
 
@@ -340,6 +336,31 @@ def tool_rdp_screenshot(params):
     }
 
 
+
+def focus_rdp_window():
+    """Focus the xfreerdp3 window on the Xvfb display.
+
+    On a headless Xvfb display without a window manager, xdotool needs
+    to be told which window to send events to. This finds the xfreerdp3
+    window by its class name and activates it.
+    """
+    env = os.environ.copy()
+    env["DISPLAY"] = session.display
+
+    # Find the xfreerdp3 window by class
+    result = subprocess.run(
+        ["xdotool", "search", "--class", "freerdp"],
+        capture_output=True, text=True, env=env, timeout=5,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        win_id = result.stdout.strip().splitlines()[0]
+        # Focus and activate the window
+        subprocess.run(["xdotool", "windowfocus", win_id], capture_output=True, env=env, timeout=5)
+        subprocess.run(["xdotool", "windowactivate", win_id], capture_output=True, env=env, timeout=5)
+        return win_id
+    return None
+
+
 def tool_rdp_click(params):
     """Click at coordinates on the Windows desktop."""
     if not session.connected:
@@ -354,6 +375,9 @@ def tool_rdp_click(params):
 
     env = os.environ.copy()
     env["DISPLAY"] = session.display
+
+    # Focus the xfreerdp3 window first (required on headless Xvfb)
+    focus_rdp_window()
 
     button_map = {"left": 1, "middle": 2, "right": 3}
     btn_num = button_map.get(button, 1)
@@ -385,6 +409,9 @@ def tool_rdp_double_click(params):
     env = os.environ.copy()
     env["DISPLAY"] = session.display
 
+    # Focus the xfreerdp3 window first (required on headless Xvfb)
+    focus_rdp_window()
+
     subprocess.run(
         ["xdotool", "mousemove", str(x), str(y), "click", "--repeat", "2", "1"],
         capture_output=True,
@@ -411,6 +438,9 @@ def tool_rdp_right_click(params):
     env = os.environ.copy()
     env["DISPLAY"] = session.display
 
+    # Focus the xfreerdp3 window first (required on headless Xvfb)
+    focus_rdp_window()
+
     subprocess.run(
         ["xdotool", "mousemove", str(x), str(y), "click", "3"],
         capture_output=True,
@@ -434,6 +464,9 @@ def tool_rdp_type(params):
 
     env = os.environ.copy()
     env["DISPLAY"] = session.display
+
+    # Focus the xfreerdp3 window first (required on headless Xvfb)
+    focus_rdp_window()
 
     # Use xdotool to type the text
     subprocess.run(
@@ -460,6 +493,9 @@ def tool_rdp_key(params):
     env = os.environ.copy()
     env["DISPLAY"] = session.display
 
+    # Focus the xfreerdp3 window first (required on headless Xvfb)
+    focus_rdp_window()
+
     # xdotool key syntax: "Return", "Escape", "ctrl+s", "alt+Tab", etc.
     subprocess.run(
         ["xdotool", "key", "--clearmodifiers", keys],
@@ -485,6 +521,9 @@ def tool_rdp_scroll(params):
 
     env = os.environ.copy()
     env["DISPLAY"] = session.display
+
+    # Focus the xfreerdp3 window first (required on headless Xvfb)
+    focus_rdp_window()
 
     button = 4 if direction == "up" else 5
 

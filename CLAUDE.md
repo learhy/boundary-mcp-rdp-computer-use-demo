@@ -31,8 +31,7 @@ Your task is to connect to a remote Windows host through Boundary, use computer 
 Using the computer use tools (rdp_screenshot, rdp_click, rdp_type, rdp_key), accomplish the following on the Windows host:
 
 1. Open PowerShell:
-   - Take a screenshot to see the desktop
-   - Click on the Start button or search bar
+   - Press the Windows key (`super` key event) to open the Start menu
    - Type "powershell" and press Enter
    - Take a screenshot to verify PowerShell opened
 

@@ -312,7 +312,7 @@ ibm-bob --config .mcp.json
 
 **Phase 2: Set Up IIS**
 5. Takes a screenshot to see the Windows desktop
-6. Clicks on the Start button or search bar, types "powershell", presses Enter
+6. Presses the Windows key (super) to open the Start menu, types "powershell", presses Enter
 7. In PowerShell, types `Install-WindowsFeature -Name Web-Server` and presses Enter
 8. Waits for IIS installation to complete (takes screenshots to monitor)
 9. Creates the hello world page: `Set-Content -Path "C:\inetpub\wwwroot\hello.html" -Value "<html><body><h1>Hello World from Boundary!</h1><p>Deployed by AI agent via RDP through HashiCorp Boundary.</p></body></html>" -Force`
