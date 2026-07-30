@@ -1,6 +1,6 @@
 # Boundary MCP RDP Computer Use Demo
 
-An AI agent (IBM Bob) connects to a remote Windows host through HashiCorp Boundary using the RDP target type, uses computer use tools (screenshot, click, type, key press) to set up IIS with a hello world page, and retrieves the session recording to demonstrate the audit trail.
+An AI agent (IBM Bob) connects to a remote Windows host through HashiCorp Boundary using the RDP target type, uses computer use tools (screenshot, click, type, key press) to install IIS, create a new Windows user, serve a hello world web page, verify it in a browser, edit the page, verify the update, and retrieves the session recording to demonstrate the audit trail.
 
 ## Two Modes
 
@@ -24,7 +24,7 @@ Uses `boundary dev` in Docker. Works for the RDP computer use flow but does NOT 
 
 1. **RDP access via Boundary** — a remote Windows host (e.g. AWS EC2 Windows Server) is registered as a Boundary TCP target on port 3389. Boundary brokers credentials so the agent authenticates without handling passwords directly. The entire session is proxied through a Boundary worker.
 
-2. **Agent-driven computer use** — the agent takes screenshots of the Windows desktop, identifies UI elements by looking at the pixels, clicks on targets, types commands, and sends key events. It installs IIS, creates a hello world page, and verifies the site is serving.
+2. **Agent-driven computer use** — the agent takes screenshots of the Windows desktop, identifies UI elements by looking at the pixels, clicks on targets, types commands, and sends key events. It installs IIS, creates a hello world page, creates a new Windows local user, opens the page in Edge browser, edits the page content, and verifies the update in the browser.
 
 3. **Session recording for audit** (HCP mode only) — the RDP target has session recording enabled with a MinIO storage bucket. Every frame, every click, every keystroke is captured. After the session ends, the recording is available for download and playback.
 
@@ -312,22 +312,35 @@ ibm-bob --config .mcp.json
 
 **Phase 2: Set Up IIS**
 5. Takes a screenshot to see the Windows desktop
-6. Clicks on the Start button or search bar
-7. Types "powershell" and presses Enter
-8. In PowerShell, types `Install-WindowsFeature -Name Web-Server` and presses Enter
-9. Waits for IIS installation to complete (takes screenshots to monitor)
-10. Types the command to create `index.html` with hello world content
-11. Types `Invoke-WebRequest -Uri http://localhost -UseBasicParsing` to verify
+6. Clicks on the Start button or search bar, types "powershell", presses Enter
+7. In PowerShell, types `Install-WindowsFeature -Name Web-Server` and presses Enter
+8. Waits for IIS installation to complete (takes screenshots to monitor)
+9. Creates the hello world page: `Set-Content -Path "C:\inetpub\wwwroot\hello.html" -Value "<html><body><h1>Hello World from Boundary!</h1><p>Deployed by AI agent via RDP through HashiCorp Boundary.</p></body></html>" -Force`
+10. Verifies with: `C:\Windows\System32\curl.exe -s http://localhost/hello.html` and checks HTTP status is 200
 
-**Phase 3: Verify**
-12. Takes a final screenshot showing the HTTP 200 response and HTML content
+**Phase 3: Create a New Windows User**
+11. Creates a local user: `New-LocalUser -Name "demo-user" -Description "Demo user created by AI agent" -NoPassword`
+12. Adds to Users group: `Add-LocalGroupMember -Group "Users" -Member "demo-user"`
+13. Verifies the user: `Get-LocalUser -Name "demo-user" | Select-Object Name, Enabled, Description`
 
-**Phase 4: Disconnect and Retrieve Recording**
-13. Calls `rdp_disconnect` to close the RDP session
-14. Waits for the session recording to finalize
-15. Calls `rdp_list_recordings` to list available recordings
-16. Calls `rdp_download_recording` to download the recording
-17. Reports the recording ID, file size, and duration
+**Phase 4: Open the Web Page in a Browser**
+14. Opens Edge: `Start-Process msedge "http://localhost/hello.html"`
+15. Waits 3-4 seconds, takes a screenshot to see the page rendered in the browser
+16. Verifies the page shows "Hello World from Boundary!"
+
+**Phase 5: Edit the Page and Verify the Update**
+17. Returns to PowerShell (Alt+Tab or click)
+18. Edits the page: `Set-Content -Path "C:\inetpub\wwwroot\hello.html" -Value "<html><body><h1>Hello World from Boundary - UPDATED!</h1><p>This page was edited by an AI agent via RDP.</p><p>User demo-user was created.</p></body></html>" -Force`
+19. Switches to Edge, presses F5 to refresh
+20. Takes a screenshot to verify the page now shows "Hello World from Boundary - UPDATED!"
+21. Confirms the update with curl back in PowerShell
+
+**Phase 6: Disconnect and Retrieve Recording**
+22. Calls `rdp_disconnect` to close the RDP session
+23. Waits for the session recording to finalize
+24. Calls `rdp_list_recordings` to list available recordings
+25. Calls `rdp_export_recording` to export the recording as WebM video
+26. Reports the recording ID, file size, and duration
 
 ### Step 8: Export the session recording as WebM video
 
